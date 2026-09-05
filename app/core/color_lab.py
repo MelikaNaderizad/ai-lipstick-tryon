@@ -11,38 +11,25 @@ import cv2
 import numpy as np
 
 
-def apply_color_to_masked_region(image_bgr, mask, target_lab, blend_ratio=0.75):
-    """
-    image_bgr: تصویر ورودی (BGR, numpy array)
-    mask: ماسک فازی ناحیهٔ لب (همان اندازهٔ تصویر، مقادیر float بین ۰ و ۱)
-    target_lab: دیکشنری {"l":.., "a":.., "b":..} رنگ محصول (بازهٔ استاندارد Lab)
-    blend_ratio: چقدر از رنگ محصول در برابر رنگ اصلی لب غالب باشد (۰ تا ۱)
-                 مثلاً ۰.۷۵ یعنی ۷۵٪ رنگ محصول + ۲۵٪ رنگ طبیعی لب
-
-    خروجی: تصویر نهایی BGR با رنگ اعمال‌شده
-    """
+def apply_color_to_masked_region(image_bgr, mask, target_lab, blend_ratio=0.9, l_blend_ratio=0.35):
     img_lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
-
-    # تبدیل کانال‌های OpenCV (بازهٔ 0-255) به بازهٔ استاندارد Lab
     l_ch = img_lab[:, :, 0] * (100.0 / 255.0)
     a_ch = img_lab[:, :, 1] - 128.0
     b_ch = img_lab[:, :, 2] - 128.0
 
-    # ترکیب: در هر پیکسل، به نسبت (mask * blend_ratio) به‌سمت رنگ محصول می‌رویم
-    alpha = mask * blend_ratio  # مقدار نهایی وزن رنگ محصول در هر پیکسل
-
+    alpha = mask * blend_ratio
     new_a = a_ch * (1 - alpha) + target_lab["a"] * alpha
     new_b = b_ch * (1 - alpha) + target_lab["b"] * alpha
-    # کانال L دست‌نخورده می‌ماند تا بافت/نور طبیعی لب حفظ شود
-    new_l = l_ch
 
-    # بازگرداندن به بازهٔ OpenCV (0-255) برای بازسازی تصویر
+    # به‌جای دست‌نخورده گذاشتن کامل L، فقط بخشی از فاصله تا L محصول رو می‌پیمایم
+    # (l_blend_ratio پایین = بافت/براقی طبیعی لب بیشتر حفظ می‌شه)
+    l_alpha = mask * blend_ratio * l_blend_ratio
+    new_l = l_ch * (1 - l_alpha) + target_lab["l"] * l_alpha
+
     out_lab = np.stack([
         new_l * (255.0 / 100.0),
         new_a + 128.0,
         new_b + 128.0,
     ], axis=-1)
     out_lab = np.clip(out_lab, 0, 255).astype(np.uint8)
-
-    result_bgr = cv2.cvtColor(out_lab, cv2.COLOR_LAB2BGR)
-    return result_bgr
+    return cv2.cvtColor(out_lab, cv2.COLOR_LAB2BGR)
