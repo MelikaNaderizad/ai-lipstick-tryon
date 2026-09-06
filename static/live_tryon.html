@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>لایو Try-On رژ لب — نسخهٔ دقیق</title>
+<style>
+  body {
+    font-family: Tahoma, sans-serif;
+    max-width: 720px;
+    margin: 24px auto;
+    padding: 0 16px;
+    background: #111;
+    color: #eee;
+  }
+  h1 { font-size: 20px; }
+  #stage {
+    position: relative;
+    width: 640px;
+    max-width: 100%;
+    aspect-ratio: 4 / 3;
+    background: #000;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  #outputCanvas { width: 100%; height: 100%; display: block; }
+  video { display: none; }
+
+  .controls { margin-top: 16px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+
+  button.primary {
+    padding: 10px 18px; font-size: 14px; border-radius: 8px; border: none;
+    background: #6c5ce7; color: white; cursor: pointer;
+  }
+  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .swatch-btn {
+    width: 46px; height: 46px; border-radius: 50%;
+    border: 2px solid #444; cursor: pointer; padding: 0;
+  }
+  .swatch-btn.active { border-color: #fff; box-shadow: 0 0 0 2px #6c5ce7; }
+
+  .slider-row label { min-width: 110px; display: inline-block; font-size: 13px; }
+  input[type="range"] { width: 200px; }
+
+  #status { font-size: 13px; color: #aaa; margin-top: 8px; min-height: 18px; }
+  #debugMask { position: absolute; top: 8px; left: 8px; width: 100px; height: 75px; border: 1px solid #555; opacity: 0.9; display: none; }
+</style>
+</head>
+<body>
+
+<h1>لایو Try-On رژ لب — نسخهٔ دقیق</h1>
+<p style="font-size:13px; color:#aaa;">
+  ماسک لب حالا از دو کانتور واقعی (بیرونی + داخلی دهن) ساخته می‌شه، نه یه
+  حدس تقریبی. اگه دهن باز باشه، داخلش (دندون/زبون) خودکار رنگی نمی‌شه.
+</p>
+
+<div id="stage">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="outputCanvas"></canvas>
+  <canvas id="debugMask"></canvas>
+</div>
+
+<div class="controls">
+  <div class="row">
+    <button class="primary" id="startBtn">روشن کردن وبکم</button>
+    <label style="font-size:12px;"><input type="checkbox" id="debugToggle"> نمایش ماسک (دیباگ)</label>
+    <span id="status"></span>
+  </div>
+
+  <div class="row" id="productRow"></div>
+
+  <div class="row slider-row">
+    <label for="intensity">شدت رنگ</label>
+    <input type="range" id="intensity" min="0" max="100" value="85">
+  </div>
+
+  <div class="row slider-row">
+    <label for="smoothing">ثبات (ضدلرزش)</label>
+    <input type="range" id="smoothing" min="0" max="90" value="55">
+  </div>
+</div>
+
+<script type="module">
+import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+// ---------------------------------------------------------------
+// محصولات فعلاً هاردکد
+// ---------------------------------------------------------------
+const PRODUCTS = [
+  { id: 1, name: "رژ ۱", lab: { l: 58.06, a: 41.36, b: 12.60 } },
+  { id: 2, name: "رژ ۲", lab: { l: 47.75, a: 31.71, b: 15.62 } },
+  { id: 3, name: "رژ ۳", lab: { l: 51.16, a: 28.59, b: 12.21 } },
+  { id: 4, name: "آبی فانتزی", lab: { l: 52.31, a: -7.14, b: -37.91 } },
+];
+
+// ---------------------------------------------------------------
+// 🔧 FIX اصلی: به‌جای یه convex hull تقریبی، دو حلقهٔ بستهٔ واقعیِ
+// لب رو جدا نگه می‌داریم — کانتور بیرونی و کانتور داخلی (مرز دهن).
+// این دو حلقه با ترتیب صحیح (طبق توپولوژی FaceMesh) دورتادور لب رو
+// می‌پیمایند، نه یه مجموعهٔ نامرتب نقاط.
+// ---------------------------------------------------------------
+const LIP_OUTER = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146];
+const LIP_INNER = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95];
+
+function labToRgb(l, a, b) {
+  let y = (l + 16) / 116;
+  let x = a / 500 + y;
+  let z = y - b / 200;
+  const inv = (t) => (t ** 3 > 0.008856 ? t ** 3 : (t - 16 / 116) / 7.787);
+  x = 0.95047 * inv(x);
+  y = 1.0 * inv(y);
+  z = 1.08883 * inv(z);
+  let r = x * 3.2406 + y * -1.5372 + z * -0.4986;
+  let g = x * -0.9689 + y * 1.8758 + z * 0.0415;
+  let bl = x * 0.0557 + y * -0.2040 + z * 1.0570;
+  const gamma = (c) => (c > 0.0031308 ? 1.055 * c ** (1 / 2.4) - 0.055 : 12.92 * c);
+  r = gamma(r); g = gamma(g); bl = gamma(bl);
+  const clamp = (c) => Math.max(0, Math.min(255, Math.round(c * 255)));
+  return [clamp(r), clamp(g), clamp(bl)];
+}
+
+const video = document.getElementById("video");
+const outCanvas = document.getElementById("outputCanvas");
+const outCtx = outCanvas.getContext("2d");
+const startBtn = document.getElementById("startBtn");
+const statusEl = document.getElementById("status");
+const productRow = document.getElementById("productRow");
+const intensitySlider = document.getElementById("intensity");
+const smoothingSlider = document.getElementById("smoothing");
+const debugToggle = document.getElementById("debugToggle");
+const debugCanvas = document.getElementById("debugMask");
+const debugCtx = debugCanvas.getContext("2d");
+
+let selectedProduct = PRODUCTS[0];
+let faceLandmarker = null;
+let running = false;
+let smoothedPts = null; // برای ضدلرزش (temporal smoothing)
+
+const sceneCanvas = document.createElement("canvas");
+const sceneCtx = sceneCanvas.getContext("2d");
+const maskSharpCanvas = document.createElement("canvas");   // ماسک تیز (بدون بلور)
+const maskSharpCtx = maskSharpCanvas.getContext("2d");
+const maskSoftCanvas = document.createElement("canvas");    // ماسک بلورشده (فقط اینجا فیلتر اعمال می‌شه)
+const maskSoftCtx = maskSoftCanvas.getContext("2d");
+const colorCanvas = document.createElement("canvas");
+const colorCtx = colorCanvas.getContext("2d");
+
+function buildProductButtons() {
+  PRODUCTS.forEach((p) => {
+    const [r, g, b] = labToRgb(p.lab.l, p.lab.a, p.lab.b);
+    const btn = document.createElement("button");
+    btn.className = "swatch-btn" + (p === selectedProduct ? " active" : "");
+    btn.style.background = `rgb(${r},${g},${b})`;
+    btn.title = p.name;
+    btn.addEventListener("click", () => {
+      selectedProduct = p;
+      document.querySelectorAll(".swatch-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+    });
+    productRow.appendChild(btn);
+  });
+}
+buildProductButtons();
+
+async function setupFaceLandmarker() {
+  statusEl.textContent = "در حال بارگذاری مدل تشخیص چهره...";
+  const filesetResolver = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+  );
+
+  const baseConfig = {
+    baseOptions: {
+      modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      delegate: "GPU",
+    },
+    outputFaceBlendshapes: false,
+    outputFacialTransformationMatrixes: false,
+    runningMode: "VIDEO",
+    numFaces: 1,
+  };
+
+  try {
+    faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, baseConfig);
+  } catch (e) {
+    // بعضی مرورگرها/کارت‌گرافیک‌ها روی GPU delegate خطا می‌دن؛ برگرد به CPU
+    statusEl.textContent = "GPU در دسترس نبود، تلاش با CPU...";
+    baseConfig.baseOptions.delegate = "CPU";
+    faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, baseConfig);
+  }
+  statusEl.textContent = "مدل آماده‌ست.";
+}
+
+async function startCamera() {
+  startBtn.disabled = true;
+  try {
+    if (!faceLandmarker) await setupFaceLandmarker();
+
+    statusEl.textContent = "در حال درخواست دسترسی به وبکم...";
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480 },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    [outCanvas, sceneCanvas, maskSharpCanvas, maskSoftCanvas, colorCanvas].forEach((c) => {
+      c.width = w;
+      c.height = h;
+    });
+    debugCanvas.width = w;
+    debugCanvas.height = h;
+
+    running = true;
+    statusEl.textContent = "زنده — در حال اجرا";
+    requestAnimationFrame(renderLoop);
+  } catch (err) {
+    statusEl.textContent = `خطا: ${err.message}`;
+    startBtn.disabled = false;
+  }
+}
+
+let lastVideoTime = -1;
+
+function renderLoop() {
+  if (!running) return;
+  try {
+    if (video.currentTime !== lastVideoTime) {
+      lastVideoTime = video.currentTime;
+      const nowMs = performance.now();
+      const result = faceLandmarker.detectForVideo(video, nowMs);
+      drawFrame(result);
+    }
+  } catch (err) {
+    statusEl.textContent = `خطای رندر: ${err.message}`;
+  }
+  requestAnimationFrame(renderLoop);
+}
+
+function smoothLandmarks(rawPts) {
+  const factor = smoothingSlider.value / 100; // 0 = بدون smoothing, نزدیک 1 = خیلی کند/پایدار
+  if (!smoothedPts) {
+    smoothedPts = rawPts.map((p) => [p[0], p[1]]);
+    return smoothedPts;
+  }
+  for (let i = 0; i < rawPts.length; i++) {
+    smoothedPts[i][0] = smoothedPts[i][0] * factor + rawPts[i][0] * (1 - factor);
+    smoothedPts[i][1] = smoothedPts[i][1] * factor + rawPts[i][1] * (1 - factor);
+  }
+  return smoothedPts;
+}
+
+function pathFromLoop(ctx, points) {
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+  ctx.closePath();
+}
+
+function drawFrame(result) {
+  const w = sceneCanvas.width;
+  const h = sceneCanvas.height;
+
+  sceneCtx.clearRect(0, 0, w, h);
+  sceneCtx.drawImage(video, 0, 0, w, h);
+
+  const landmarks = result.faceLandmarks && result.faceLandmarks[0];
+
+  if (landmarks) {
+    const allIdx = [...LIP_OUTER, ...LIP_INNER];
+    const rawPts = allIdx.map((i) => [landmarks[i].x * w, landmarks[i].y * h]);
+    const smoothed = smoothLandmarks(rawPts);
+
+    const outerPts = smoothed.slice(0, LIP_OUTER.length);
+    const innerPts = smoothed.slice(LIP_OUTER.length);
+
+    // --- Safety check: جلوگیری از رنگی‌شدن کل صفحه اگه تشخیص خراب بود ---
+    const xs = outerPts.map((p) => p[0]);
+    const ys = outerPts.map((p) => p[1]);
+    const bboxW = Math.max(...xs) - Math.min(...xs);
+    const bboxH = Math.max(...ys) - Math.min(...ys);
+    const plausible = bboxW > 0 && bboxW < w * 0.6 && bboxH > 0 && bboxH < h * 0.6;
+
+    if (plausible) {
+      // ۱) ماسک تیز: حلقهٔ بیرونی پر، حلقهٔ داخلی به‌عنوان حفره (evenodd)
+      maskSharpCtx.clearRect(0, 0, w, h);
+      maskSharpCtx.fillStyle = "white";
+      maskSharpCtx.beginPath();
+      pathFromLoop(maskSharpCtx, outerPts);
+      pathFromLoop(maskSharpCtx, innerPts);
+      maskSharpCtx.fill("evenodd");
+
+      // ۲) بلور فقط موقع کپی از canvas تیز به canvas نرم (هیچ‌وقت canvas
+      // رو روی خودش با فیلتر نمی‌کشیم — این باگ قبلی بود)
+      maskSoftCtx.clearRect(0, 0, w, h);
+      maskSoftCtx.filter = "blur(2.5px)";
+      maskSoftCtx.drawImage(maskSharpCanvas, 0, 0);
+      maskSoftCtx.filter = "none";
+
+      // ۳) لایه‌ی رنگ محصول، کلیپ‌شده با ماسک نرم
+      const [r, g, b] = labToRgb(selectedProduct.lab.l, selectedProduct.lab.a, selectedProduct.lab.b);
+      const intensity = intensitySlider.value / 100;
+
+      colorCtx.clearRect(0, 0, w, h);
+      colorCtx.fillStyle = `rgb(${r},${g},${b})`;
+      colorCtx.fillRect(0, 0, w, h);
+      colorCtx.globalCompositeOperation = "destination-in";
+      colorCtx.globalAlpha = intensity;
+      colorCtx.drawImage(maskSoftCanvas, 0, 0);
+      colorCtx.globalAlpha = 1;
+      colorCtx.globalCompositeOperation = "source-over";
+
+      // ۴) ترکیب: 'color' هیو/کروما رو منتقل می‌کنه و روشناییِ طبیعیِ لب
+      // (بافت/های‌لایت) رو نگه می‌داره
+      sceneCtx.globalCompositeOperation = "color";
+      sceneCtx.drawImage(colorCanvas, 0, 0);
+      sceneCtx.globalCompositeOperation = "multiply";
+      sceneCtx.globalAlpha = 0.25 * intensity;
+      sceneCtx.drawImage(colorCanvas, 0, 0);
+      sceneCtx.globalAlpha = 1;
+      sceneCtx.globalCompositeOperation = "source-over";
+
+      if (debugToggle.checked) {
+        debugCtx.clearRect(0, 0, w, h);
+        debugCtx.drawImage(maskSoftCanvas, 0, 0);
+        debugCanvas.style.display = "block";
+      } else {
+        debugCanvas.style.display = "none";
+      }
+    }
+  } else {
+    smoothedPts = null; // چهره گم شد -> smoothing رو ریست کن
+  }
+
+  outCtx.save();
+  outCtx.translate(w, 0);
+  outCtx.scale(-1, 1);
+  outCtx.drawImage(sceneCanvas, 0, 0);
+  outCtx.restore();
+}
+
+startBtn.addEventListener("click", startCamera);
+</script>
+
+</body>
+</html>

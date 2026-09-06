@@ -1,15 +1,23 @@
 """
 استخراج رنگ غالب رژ لب از عکس سواچ (لکه‌ی رنگ روی دست/مچ/ساعد).
-...(همون توضیحات قبلی)...
+
+🔧 FIX (رفع باگ رنگ‌های غیرِ warm مثل آبی/سبز/بنفش):
+    قبلاً یه فیلتر hue بین -50 تا 60 درجه بود که فرض می‌کرد رژ لب همیشه
+    قرمز/صورتی/نارنجیه. این فرض برای رنگ‌های فانتزی (آبی، سبز و ...) غلطه:
+    خوشه‌ی رنگ واقعی رژ رد می‌شد و به‌جاش یه خوشه‌ی پوست/پس‌زمینه (که هنوز
+    تو بازه‌ی مجاز بود) به اشتباه به‌عنوان "رنگ رژ" انتخاب می‌شد.
+    نتیجه: روی لب عملاً رنگ پوست/بی‌رنگ می‌نشست، نه رنگ واقعی سواچ.
+
+    راه‌حل: فیلتر hue حذف شد. چون خودِ رنگ‌غلظت (chroma) رژ تقریباً همیشه
+    به‌طور محسوسی از پوست/پس‌زمینه‌ی اطرافش بیشتره (فارغ از این‌که رژ
+    قرمز باشه یا آبی)، انتخاب بر اساس بیشترین chroma به‌تنهایی کافیه و
+    به هر رنگی generalize می‌شه.
 """
 
 import cv2
 import math
 import numpy as np
 from sklearn.cluster import KMeans
-
-LIPSTICK_HUE_MIN_DEG = -50
-LIPSTICK_HUE_MAX_DEG = 60
 
 
 def extract_dominant_swatch_color(image_path: str, k: int = 5,
@@ -63,16 +71,12 @@ def extract_dominant_swatch_color(image_path: str, k: int = 5,
     if not valid_clusters:
         valid_clusters = clusters_info
 
-    hue_filtered = [
-        c for c in valid_clusters
-        if LIPSTICK_HUE_MIN_DEG <= c["hue_deg"] <= LIPSTICK_HUE_MAX_DEG
-    ]
-    if not hue_filtered:
-        hue_filtered = valid_clusters
+    # --- FIX: بدون فیلتر hue، صرفاً پررنگ‌ترین (بیشترین chroma) خوشه ---
+    # این خوشه تقریباً همیشه پیگمنت رژه، فارغ از این‌که رنگش قرمز باشه یا
+    # آبی/سبز/بنفش — چون پیگمنت رژ همیشه پررنگ‌تر از پوست/پس‌زمینه‌ست.
+    swatch_cluster = max(valid_clusters, key=lambda c: c["chroma"])
 
-    swatch_cluster = max(hue_filtered, key=lambda c: c["chroma"])
-
-    # --- بخش جدید: به‌جای مرکز خوشه، پررنگ‌ترین زیرمجموعه‌ی همون خوشه ---
+    # --- به‌جای مرکز خوشه، پررنگ‌ترین زیرمجموعه‌ی همون خوشه ---
     cluster_pixels = pixels[swatch_cluster["_pixel_mask"]]
     cl, ca, cb = cluster_pixels[:, 0], cluster_pixels[:, 1], cluster_pixels[:, 2]
     cluster_chroma = np.sqrt(ca ** 2 + cb ** 2)
@@ -100,3 +104,11 @@ def lab_to_rgb_preview(l, a, b):
     lab_pixel = np.array([[[l * 255.0 / 100.0, a + 128.0, b + 128.0]]], dtype=np.uint8)
     rgb_pixel = cv2.cvtColor(lab_pixel, cv2.COLOR_LAB2RGB)
     return tuple(int(x) for x in rgb_pixel[0, 0])
+
+
+if __name__ == "__main__":
+    import sys
+    path = sys.argv[1] if len(sys.argv) > 1 else "test_images/swatch_1.jfif"
+    result = extract_dominant_swatch_color(path)
+    print("swatch_lab:", result["swatch_lab"])
+    print("swatch_fraction:", result["swatch_fraction"])

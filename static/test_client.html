@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>تست سریع Lipstick Try-On</title>
+<style>
+  body { font-family: Tahoma, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 16px; }
+  h1 { font-size: 20px; }
+  .row { display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+  input, select, button { padding: 8px 12px; font-size: 14px; }
+  button { cursor: pointer; }
+  .images { display: flex; gap: 16px; margin-top: 20px; flex-wrap: wrap; }
+  .images figure { margin: 0; text-align: center; }
+  .images img { max-width: 320px; border: 1px solid #ccc; border-radius: 6px; display: block; }
+  #status { margin-top: 10px; color: #555; }
+  .swatch { display: inline-block; width: 20px; height: 20px; border-radius: 4px; vertical-align: middle; margin-inline-start: 6px; border: 1px solid #999; }
+</style>
+</head>
+<body>
+
+<h1>تست سریع سرویس رژ لب</h1>
+<p>آدرس سرور (چون این صفحه از همون سرور FastAPI سرو می‌شه، خالی/نسبی هم کافیه):</p>
+<div class="row">
+  <input id="apiBase" value="" placeholder="خالی = همین سرور" size="30">
+</div>
+
+<div class="row">
+  <label>۱) عکس چهره: <input type="file" id="faceFile" accept="image/*"></label>
+</div>
+
+<div class="row">
+  <label>۲) محصول:
+    <select id="productSelect">
+      <option value="1">رژ ۱</option>
+      <option value="2">رژ ۲</option>
+      <option value="3">رژ ۳</option>
+    </select>
+  </label>
+  <button id="runBtn">اعمال رژ</button>
+</div>
+
+<div class="row">
+  <label>یا: عکس swatch یه رژ جدید <input type="file" id="swatchFile" accept="image/*"></label>
+  <button id="swatchBtn">استخراج رنگ swatch</button>
+  <span id="swatchResult"></span>
+</div>
+
+<div id="status"></div>
+
+<div class="images">
+  <figure>
+    <figcaption>عکس اصلی</figcaption>
+    <img id="origImg" src="" alt="">
+  </figure>
+  <figure>
+    <figcaption>نتیجهٔ رژ اعمال‌شده</figcaption>
+    <img id="resultImg" src="" alt="">
+  </figure>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+$('faceFile').addEventListener('change', () => {
+  const f = $('faceFile').files[0];
+  if (f) $('origImg').src = URL.createObjectURL(f);
+});
+
+$('runBtn').addEventListener('click', async () => {
+  const f = $('faceFile').files[0];
+  if (!f) { $('status').textContent = 'اول یه عکس چهره انتخاب کن.'; return; }
+
+  const base = $('apiBase').value.replace(/\/$/, '');
+  const productId = $('productSelect').value;
+  const url = `${base}/apply-lipstick?product_id=${productId}`;
+
+  const formData = new FormData();
+  formData.append('file', f);
+
+  $('status').textContent = 'در حال پردازش...';
+  $('resultImg').src = '';
+
+  try {
+    const res = await fetch(url, { method: 'POST', body: formData });
+    if (!res.ok) {
+      const errText = await res.text();
+      $('status').textContent = `خطا (${res.status}): ${errText}`;
+      return;
+    }
+    const blob = await res.blob();
+    $('resultImg').src = URL.createObjectURL(blob);
+    $('status').textContent = 'انجام شد ✅';
+  } catch (err) {
+    $('status').textContent = `خطای اتصال: ${err.message}. مطمئن شو سرور با uvicorn روشنه.`;
+  }
+});
+
+$('swatchBtn').addEventListener('click', async () => {
+  const f = $('swatchFile').files[0];
+  if (!f) { $('swatchResult').textContent = 'اول یه عکس swatch انتخاب کن.'; return; }
+
+  const base = $('apiBase').value.replace(/\/$/, '');
+  const formData = new FormData();
+  formData.append('file', f);
+
+  $('swatchResult').textContent = 'در حال استخراج...';
+
+  try {
+    const res = await fetch(`${base}/extract-product-color`, { method: 'POST', body: formData });
+    if (!res.ok) {
+      $('swatchResult').textContent = `خطا (${res.status})`;
+      return;
+    }
+    const data = await res.json();
+    const lab = data.swatch_lab;
+    $('swatchResult').innerHTML =
+      `L=${lab.l.toFixed(1)} a=${lab.a.toFixed(1)} b=${lab.b.toFixed(1)} (fraction=${data.swatch_fraction.toFixed(2)})`;
+  } catch (err) {
+    $('swatchResult').textContent = `خطای اتصال: ${err.message}`;
+  }
+});
+</script>
+
+</body>
+</html>

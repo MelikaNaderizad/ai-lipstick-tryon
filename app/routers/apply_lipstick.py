@@ -2,6 +2,11 @@
 Endpoint: POST /apply-lipstick
 ورودی: عکس مشتری (multipart) + product_id (باید در products.json موجود باشد)
 خروجی: عکس نهایی (PNG) با رژ اعمال‌شده روی لب
+
+🔧 FIX: قبلاً blend_ratio=0.75 صریحاً پاس داده می‌شد که مقدار پیش‌فرض
+جدید و بالاترِ color_lab.py (0.95) رو override می‌کرد. حذف شد تا از
+پیش‌فرض جدید (پوشش کامل‌تر) استفاده بشه. اگه لازم شد از سمت کاربر/فرانت
+قابل تنظیم باشه، می‌شه به‌عنوان query param اضافه‌اش کرد.
 """
 
 import json
@@ -54,7 +59,7 @@ async def apply_lipstick(file: UploadFile = File(...), product_id: int = None):
         raise HTTPException(status_code=422, detail="چهره‌ای در عکس تشخیص داده نشد")
 
     mask = build_lip_mask(img.shape, landmarks, feather_px=4)
-    result = apply_color_to_masked_region(img, mask, product["lab"], blend_ratio=0.75)
+    result = apply_color_to_masked_region(img, mask, product["lab"])
 
     out_path = tmp_path.replace(".jpg", "_result.png")
     cv2.imwrite(out_path, result)
