@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>تست ویجت روی یه سایت نمونه</title>
+</head>
+<body>
+
+<h1>این یه سایت نمونه‌ست (فرض کن سایت مشتریه)</h1>
+<p>ویجت باید پایین-چپ صفحه به‌صورت یه دکمه‌ی گرد ظاهر بشه.</p>
+
+<!--
+  این خط دقیقاً همونیه که به هر سایت مشتری می‌دی. فقط data-webhook رو
+  با آدرس واقعی webhook خودت (از n8n) عوض کن.
+-->
+<script
+  src="lipstick-agent-widget.js"
+  data-webhook="https://YOUR-N8N-DOMAIN/webhook/lipstick-agent"
+  data-image-base="http://localhost:8000"
+  data-color="#c2185b"
+></script>
+
+</body>
+</html>

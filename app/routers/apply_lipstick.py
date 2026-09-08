@@ -1,32 +1,45 @@
 """
 Endpoint: POST /apply-lipstick
 ورودی: عکس مشتری (multipart) + product_id (باید در products.json موجود باشد)
-خروجی: عکس نهایی (PNG) با رژ اعمال‌شده روی لب
+خروجی: JSON شامل لینک عکس نتیجه (نه خودِ فایل باینری)
 
-🔧 FIX: قبلاً blend_ratio=0.75 صریحاً پاس داده می‌شد که مقدار پیش‌فرض
-جدید و بالاترِ color_lab.py (0.95) رو override می‌کرد. حذف شد تا از
-پیش‌فرض جدید (پوشش کامل‌تر) استفاده بشه. اگه لازم شد از سمت کاربر/فرانت
-قابل تنظیم باشه، می‌شه به‌عنوان query param اضافه‌اش کرد.
+🔧 CHANGE (برای سازگاری با ایجنت n8n): قبلاً این endpoint مستقیم فایل
+PNG رو برمی‌گردوند (FileResponse). این برای فراخوانی مستقیم از مرورگر
+(static/test_client.html) خوب بود، ولی وقتی این endpoint قراره از طریق
+یه AI Agent (که با LLM کار می‌کنه) صدا زده بشه، LLM نمی‌تونه باینری رو
+پردازش کنه — فقط متن/JSON می‌فهمه.
+
+برای همین حالا عکس نتیجه رو ذخیره می‌کنیم توی static/results/ (که از
+قبل mount شده روی /static) و به‌جاش یه JSON با لینک عکس برمی‌گردونیم.
+این‌جوری هم Agent می‌تونه لینک رو توی جوابش بذاره، هم فرانت (ویجت وب)
+می‌تونه مستقیم <img src="..."> نمایشش بده.
+
+⚠️ نکته‌ی deployment: این لینک نسبیه (/static/results/xxx.png). وقتی
+سرور رو روی دامنه‌ی واقعی بالا بردی، باید base_url رو هم بهش اضافه کنی
+(یا از طریق reverse proxy همون دامنه رو serve کنی) تا مرورگر کاربر
+نهایی بتونه بهش دسترسی داشته باشه.
 """
 
 import json
 import os
 import shutil
 import tempfile
+import uuid
 
 import cv2
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
 
-from app.core.face_landmarks import get_lip_landmarks, build_lip_mask
+from app.core.face_landmarks import get_lip_contours, build_lip_mask
 from app.core.color_lab import apply_color_to_masked_region
+from app.core.color_extract import lab_to_rgb_preview
 
 router = APIRouter()
 
-CATALOG_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "products.json",
-)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CATALOG_PATH = os.path.join(BASE_DIR, "products.json")
+RESULTS_DIR = os.path.join(BASE_DIR, "static", "results")
+
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
 def _load_product(product_id: int):
@@ -54,14 +67,22 @@ async def apply_lipstick(file: UploadFile = File(...), product_id: int = None):
     if img is None:
         raise HTTPException(status_code=400, detail="فایل تصویر معتبر نیست")
 
-    landmarks = get_lip_landmarks(img)
-    if landmarks is None:
+    contours = get_lip_contours(img)
+    if contours is None:
         raise HTTPException(status_code=422, detail="چهره‌ای در عکس تشخیص داده نشد")
 
-    mask = build_lip_mask(img.shape, landmarks, feather_px=4)
+    mask = build_lip_mask(img.shape, contours, feather_px=4)
     result = apply_color_to_masked_region(img, mask, product["lab"])
 
-    out_path = tmp_path.replace(".jpg", "_result.png")
+    out_filename = f"{uuid.uuid4().hex}.png"
+    out_path = os.path.join(RESULTS_DIR, out_filename)
     cv2.imwrite(out_path, result)
 
-    return FileResponse(out_path, media_type="image/png")
+    r, g, b = lab_to_rgb_preview(product["lab"]["l"], product["lab"]["a"], product["lab"]["b"])
+
+    return {
+        "image_url": f"/static/results/{out_filename}",
+        "product_id": product["id"],
+        "product_name": product["name"],
+        "hex": f"#{r:02x}{g:02x}{b:02x}",
+    }

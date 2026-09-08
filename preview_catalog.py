@@ -2,16 +2,22 @@
 پیش‌نمایش سریع: نتیجهٔ اعمال رژ همهٔ محصولات کاتالوگ روی یک عکس چهره،
 به‌علاوهٔ پچ رنگ swatch هر محصول، همه در یک فایل PNG کنار هم.
 
-چرا این اسکریپت؟
-    endpoint اصلی (/apply-lipstick) برای هر محصول یک PNG جدا برمی‌گردونه،
-    پس مقایسهٔ چند محصول با هم روی Swagger سخته. این اسکریپت یک‌جا
-    نتیجهٔ همه رو کنار هم می‌چینه تا سریع ببینی مدل چطور کار می‌کنه.
-
-اجرا (از داخل پوشهٔ اصلی پروژه، یعنی همون جایی که app/ و products.json هستن):
+اجرا (از داخل پوشهٔ اصلی پروژه):
     python preview_catalog.py face_sample.jpg
 
-اگه مسیر عکس رو ندی، دنبال face_sample.jpg در پوشهٔ فعلی می‌گرده.
+اگه مسیر عکس رو ندی، دنبال face_sample.jpg در پوشهٔ همین اسکریپت می‌گرده.
 خروجی: preview_result.png (در همون پوشه)
+
+🔧 FIX (باگ «عکس پیدا نشد»): قبلاً face_path یک مسیر نسبی خام بود که با
+os.path.exists نسبت به working directory فعلی ترمینال چک می‌شد، نه
+نسبت به پوشه‌ای که خود preview_catalog.py توشه. یعنی اگه از یه پوشهٔ
+دیگه (مثلاً از داخل app/) اسکریپت رو اجرا می‌کردی، حتی اگه عکس دقیقاً
+کنار خود این فایل بود، پیدا نمی‌شد. حالا face_path هم مثل CATALOG_PATH
+نسبت به مسیر خود اسکریپت resolve می‌شه (مگر این‌که مسیر مطلق داده باشی).
+
+🔧 CHANGE دیگه: استفاده از get_lip_contours (به‌جای get_lip_landmarks
+قدیمی) چون build_lip_mask دیگه به دو کانتور مرتب (بیرونی/داخلی) نیاز
+داره، نه یک لیست نامرتب از نقاط.
 """
 
 import json
@@ -21,12 +27,13 @@ import sys
 import cv2
 import numpy as np
 
-from app.core.face_landmarks import get_lip_landmarks, build_lip_mask
+from app.core.face_landmarks import get_lip_contours, build_lip_mask
 from app.core.color_lab import apply_color_to_masked_region
 from app.core.color_extract import lab_to_rgb_preview
 
-CATALOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "products.json")
-OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preview_result.png")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CATALOG_PATH = os.path.join(SCRIPT_DIR, "products.json")
+OUT_PATH = os.path.join(SCRIPT_DIR, "preview_result.png")
 
 CELL_W = 260
 CELL_H = 320
@@ -46,8 +53,7 @@ def _make_cell(img, label, swatch_rgb=None):
     parts = []
     if swatch_rgb is not None:
         swatch = np.zeros((SWATCH_H, CELL_W, 3), dtype=np.uint8)
-        # لب Rgb -> BGR برای opencv
-        swatch[:, :] = (swatch_rgb[2], swatch_rgb[1], swatch_rgb[0])
+        swatch[:, :] = (swatch_rgb[2], swatch_rgb[1], swatch_rgb[0])  # RGB -> BGR
         parts.append(swatch)
 
     parts.append(resized)
@@ -63,7 +69,10 @@ def _make_cell(img, label, swatch_rgb=None):
 
 
 def main():
-    face_path = sys.argv[1] if len(sys.argv) > 1 else "face_sample.jpg"
+    face_arg = sys.argv[1] if len(sys.argv) > 1 else "face_sample.jpg"
+    # اگه مسیر مطلق نبود، نسبت به پوشهٔ خودِ این اسکریپت resolve کن،
+    # نه نسبت به working directory فعلی ترمینال.
+    face_path = face_arg if os.path.isabs(face_arg) else os.path.join(SCRIPT_DIR, face_arg)
 
     if not os.path.exists(face_path):
         print(f"❌ عکس چهره پیدا نشد: {face_path}")
@@ -76,12 +85,12 @@ def main():
         print(f"❌ فایل عکس معتبر نیست: {face_path}")
         sys.exit(1)
 
-    landmarks = get_lip_landmarks(img)
-    if landmarks is None:
+    contours = get_lip_contours(img)
+    if contours is None:
         print("❌ چهره‌ای در عکس تشخیص داده نشد (مدیاپایپ لندمارک لب پیدا نکرد).")
         sys.exit(1)
 
-    mask = build_lip_mask(img.shape, landmarks, feather_px=4)
+    mask = build_lip_mask(img.shape, contours, feather_px=4)
 
     products = _load_catalog()
     if not products:
@@ -91,7 +100,7 @@ def main():
     cells = [_make_cell(img, "Original")]
 
     for p in products:
-        result = apply_color_to_masked_region(img, mask, p["lab"], blend_ratio=0.75)
+        result = apply_color_to_masked_region(img, mask, p["lab"])
         swatch_rgb = lab_to_rgb_preview(p["lab"]["l"], p["lab"]["a"], p["lab"]["b"])
         label = f"{p['name']} (id={p['id']})"
         cells.append(_make_cell(result, label, swatch_rgb=swatch_rgb))
